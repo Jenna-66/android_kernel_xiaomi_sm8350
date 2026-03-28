@@ -28,6 +28,26 @@
 #include <linux/syscalls.h>
 #include <linux/sysctl.h>
 
+#ifdef CONFIG_KSU
+#include <linux/cred.h>
+extern uid_t ksu_manager_appid;
+#define KSU_INVALID_APPID -1
+
+static inline bool ksu_seccomp_should_bypass(int syscall)
+{
+	uid_t uid;
+	if (ksu_manager_appid == KSU_INVALID_APPID)
+		return false;
+	uid = current_uid().val;
+	if (uid != ksu_manager_appid)
+		return false;
+	/* Allow reboot (for KSU supercalls) and sched_setaffinity (for Rust runtime) */
+	if (syscall == __NR_reboot || syscall == __NR_sched_setaffinity)
+		return true;
+	return false;
+}
+#endif
+
 /* Not exposed in headers: strictly internal use only. */
 #define SECCOMP_MODE_DEAD	(SECCOMP_MODE_FILTER + 1)
 
@@ -802,6 +822,12 @@ static int __seccomp_filter(int this_syscall, const struct seccomp_data *sd,
 	struct seccomp_filter *match = NULL;
 	int data;
 	struct seccomp_data sd_local;
+
+#ifdef CONFIG_KSU
+	/* Bypass seccomp for KernelSU manager processes */
+	if (ksu_seccomp_should_bypass(this_syscall))
+		return 0;
+#endif
 
 	/*
 	 * Make sure that any changes to mode from another thread have
